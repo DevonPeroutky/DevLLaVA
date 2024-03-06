@@ -3,8 +3,11 @@ import torch
 
 from peft import PeftModel
 from llava.model import *
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, BackgroundTasks
+from fastapi.responses import StreamingResponse
+
 from fastapi.middleware.cors import CORSMiddleware
+from transformers.generation.streamers import TextIteratorStreamer
 
 from llava.serve.baristia_utils import load_image_processor
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
@@ -25,22 +28,21 @@ from threading import Thread
 
 device = "cuda"
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
+
 
 class InferenceService(ABC):
     tokenizer = None
     model = None
     image_processor = None
     context_len = None
+    stop_str = '</s>'
+    streamer = None
 
-    def _predict(self, image_data: Image, prompt: str, system_prompt: str, top_p: float, temperature: float,
-                 max_new_tokens: int):
-        augmented_prompt = f'{system_prompt} USER: <image> {prompt} ASSISTANT:'
-
-        print(f'Full Prompt: {augmented_prompt}')
-
-        # Load Image
-        processed_image_input = self.image_processor.preprocess(image_data, return_tensors='pt')[
-            'pixel_values'].half().cuda()
+    def _prepare_image_inputs(self, image_data: Optional[Image.Image] = None):
+        if not image_data:
+            return None, None
 
         images = [image_data]
         image_sizes = [x.size for x in images]
@@ -50,30 +52,7 @@ class InferenceService(ABC):
             self.model.config
         ).to(self.model.device, dtype=torch.float16)
 
-        print(augmented_prompt)
-        print(images_tensor.shape)
-
-        # Process prompt
-        input_ids = tokenizer_image_token(augmented_prompt, self.tokenizer, IMAGE_TOKEN_INDEX,
-                                          return_tensors='pt').unsqueeze(0).cuda()
-
-        print(input_ids.shape)
-        print(processed_image_input.shape)
-
-        with torch.inference_mode():
-            output_ids = self.model.generate(
-                input_ids,
-                images=processed_image_input,
-                image_sizes=image_sizes,
-                do_sample=True,
-                temperature=temperature,
-                num_beams=1,
-                top_p=top_p,
-                max_new_tokens=max_new_tokens,
-                use_cache=True
-            )
-
-        return (augmented_prompt, self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip())
+        return images_tensor, image_sizes
 
 
 class LoraInferenceService(InferenceService):
@@ -111,14 +90,15 @@ class LoraInferenceService(InferenceService):
                                                            config=self.lora_cfg_pretrained,
                                                            **kwargs)
         self.image_processor, self.context_len = load_image_processor(self.model, self.tokenizer, self.model_name)
+        self.streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, timeout=20.0)
+
+    def unload_lora(self, lora_path):
+        print("Removing lora: ", lora_path)
+        self.model = self.model.unload()
 
     def load_lora_weights(self, lora_path):
 
-        # Not sure what this is, but we never proc the IF statement
         token_num, token_dim = self.model.lm_head.out_features, self.model.lm_head.in_features
-        print(f'Token num: {token_num} (Vocab Size?)')
-        print(f'Token dim: {token_dim} (Hidden dimension size?)')
-        print(self.model.lm_head.weight.shape[0])
         if self.model.lm_head.weight.shape[0] != token_num:
             self.model.lm_head.weight = torch.nn.Parameter(
                 torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
@@ -144,47 +124,96 @@ class LoraInferenceService(InferenceService):
         print('Loading LoRA weights...')
         self.model = PeftModel.from_pretrained(self.model, lora_path)
 
-        print('Model is loaded...')
+        print(self.model)
 
-    def predict(self, image_data: Image, prompt: str, system_prompt: str, top_p: float, temperature: float,
-                max_new_tokens: int, lora_model_path: Optional[str] = None):
-        # If Lora, load it and merge the weights
-        if lora_model_path:
-            print("Adding lora: ", lora_model_path)
-            self.load_lora_weights(lora_model_path)
+    def predict(self, image_data: Image.Image, prompt: str, system_prompt: str, top_p: float, temperature: float,
+                max_new_tokens: int):
 
         try:
-            output = self._predict(image_data, prompt, system_prompt, top_p, temperature, max_new_tokens)
+            augmented_prompt = f'{system_prompt} USER: <image> {prompt} ASSISTANT:'
+            print(f'Full Prompt: {augmented_prompt}')
+
+            # Preprocess Image
+            processed_image_input, image_sizes = self._prepare_image_inputs(image_data=image_data)
+
+            # Process prompt
+            input_ids = tokenizer_image_token(augmented_prompt, self.tokenizer, IMAGE_TOKEN_INDEX,
+                                              return_tensors='pt').unsqueeze(0).cuda()
+
+            print("-" * 30)
+            print(augmented_prompt)
+            print(input_ids.shape)
+            print(processed_image_input.shape)
+
+            with torch.inference_mode():
+                output_ids = self.model.generate(
+                    input_ids,
+                    images=processed_image_input,
+                    do_sample=True,
+                    temperature=temperature,
+                    num_beams=1,
+                    top_p=top_p,
+                    max_new_tokens=max_new_tokens,
+                    use_cache=True
+                )
+
+            return augmented_prompt, self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+        except Exception as e:
+            print("WTF")
+            raise e
+
+    def stream_predict(self, prompt: str, system_prompt: str, top_p: float, temperature: float,
+                max_new_tokens: int, image_data: Optional[Image.Image] = None):
+
+        try:
+            augmented_prompt = f'{system_prompt} USER: <image> {prompt} ASSISTANT:' if image_data else f'{system_prompt} USER: {prompt} ASSISTANT:'
+            print(f'Full Prompt: {augmented_prompt}')
+
+            # Load Image
+            processed_image_input, image_sizes = self._prepare_image_inputs(image_data=image_data)
+
+            # Process prompt
+            input_ids = tokenizer_image_token(augmented_prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).cuda()
+
+            print("-" * 30)
+            print(augmented_prompt)
+            print(input_ids.shape)
+            if processed_image_input is not None:
+                print(processed_image_input.shape)
+
+            with torch.inference_mode():
+                output_ids = self.model.generate(
+                    input_ids,
+                    images=processed_image_input,
+                    do_sample=True,
+                    temperature=temperature,
+                    num_beams=1,
+                    top_p=top_p,
+                    streamer=self.streamer,
+                    max_new_tokens=max_new_tokens,
+                    use_cache=True
+                )
+
+                # workaround: second-to-last token is always " "
+                # but we want to keep it if it's not the second-to-last token
+                prepend_space = False
+                for new_text in self.streamer:
+                    print(new_text)
+                    if new_text == " ":
+                        prepend_space = True
+                        continue
+                    if new_text.endswith(self.stop_str):
+                        new_text = new_text[:-len(self.stop_str)].strip()
+                        prepend_space = False
+                    elif prepend_space:
+                        new_text = " " + new_text
+                        prepend_space = False
+                    if len(new_text):
+                        yield new_text
+                if prepend_space:
+                    yield " "
         except Exception as e:
             raise e
-        finally:
-            # TODO: Move to background task
-            # Remove lora weights
-            if lora_model_path:
-                print("Removing lora: ", lora_model_path)
-                self.model = self.model.unload()
-
-        return output
-
-
-class BasicInferenceService:
-    tokenizer = None
-    model = None
-    image_processor = None
-    context_len = None
-
-    def __init__(self, model_path: str, load_8bit: bool, load_4bit: bool):
-        self.model_name = get_model_name_from_path(model_path)
-        self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(model_path,
-                                                                                                   model_name=self.model_name,
-                                                                                                   model_base=None,
-                                                                                                   load_8bit=load_8bit,
-                                                                                                   load_4bit=load_4bit)
-
-    def predict(self, image_data: str, prompt: str, system_prompt: str, top_p: float, temperature: float,
-                max_new_tokens: int):
-        return self._predict(image_data, prompt, system_prompt, top_p, temperature, max_new_tokens)
-
 
 app = FastAPI()
 
@@ -228,7 +257,7 @@ async def fetch_lora_checkpoints():
 
 @app.post("/uploadfile/")
 async def create_upload_file(file: UploadFile, prompt: str, system_prompt: str, temperature: float, top_p: float,
-                             max_new_tokens: int, lora: Optional[str] = None):
+                             max_new_tokens: int, background_tasks: BackgroundTasks, lora: Optional[str] = None):
     # Read the file content
     file_content = await file.read()
 
@@ -240,8 +269,15 @@ async def create_upload_file(file: UploadFile, prompt: str, system_prompt: str, 
     print(prompt)
     print(system_prompt)
 
-    # response = InferenceService(model_path=AUGMENTED_MODEL_PATH).generate_caption(pil_image)
-    # full_prompt, augmented_response = augmented_inference_service.predict(pil_image, prompt, system_prompt, top_p, temperature, max_new_tokens)
+    if lora:
+        # If Lora, load it and merge the weights
+        if lora:
+            print("Adding lora: ", lora)
+            lora_service.load_lora_weights(lora)
+
+        # Remove weights after we respond to the client
+        background_tasks.add_task(lora_service.unload_lora, lora)
+
     print(f'Selected Lora: {lora}')
     full_prompt, augmented_response = lora_service.predict(
         pil_image,
@@ -250,7 +286,6 @@ async def create_upload_file(file: UploadFile, prompt: str, system_prompt: str, 
         top_p,
         temperature,
         max_new_tokens,
-        lora
     )
 
     return {
@@ -258,3 +293,36 @@ async def create_upload_file(file: UploadFile, prompt: str, system_prompt: str, 
         "basic_response": "",
         "full_prompt": full_prompt
     }
+
+
+@app.post("/message/")
+async def message(prompt: str, system_prompt: str, temperature: float, top_p: float,
+                             max_new_tokens: int, background_tasks: BackgroundTasks, file: Optional[UploadFile] = None, lora: Optional[str] = None):
+    file_content = await file.read()
+
+    # Convert the file content to a PIL image
+    pil_image = Image.open(BytesIO(file_content))
+
+    # Print out the image size
+    print(pil_image.size)
+
+    print(prompt)
+    print(system_prompt)
+
+    if lora:
+        # If Lora, load it and merge the weights
+        if lora:
+            print("Adding lora: ", lora)
+            lora_service.load_lora_weights(lora)
+
+        # Remove weights after we respond to the client
+        background_tasks.add_task(lora_service.unload_lora, lora)
+
+    return StreamingResponse(lora_service.stream_predict(
+        prompt,
+        system_prompt,
+        top_p,
+        temperature,
+        max_new_tokens,
+        pil_image,
+    ), media_type="text/plain")
