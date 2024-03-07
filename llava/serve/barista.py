@@ -32,30 +32,17 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 os.environ['TORCH_USE_CUDA_DSA'] = '1'
 
 
-class InferenceService(ABC):
+class LoraInferenceService:
     tokenizer = None
     model = None
     image_processor = None
     context_len = None
-    stop_str = '</s>'
     streamer = None
 
-    def _prepare_image_inputs(self, image_data: Optional[Image.Image] = None):
-        if not image_data:
-            return None, None
-
-        images = [image_data]
-        image_sizes = [x.size for x in images]
-        images_tensor = process_images(
-            images,
-            self.image_processor,
-            self.model.config
-        ).to(self.model.device, dtype=torch.float16)
-
-        return images_tensor, image_sizes
-
-
-class LoraInferenceService(InferenceService):
+    conversations = {}
+    conv = None
+    conv_img = None
+    # stop_str = '</s>'
 
     def __init__(self, model_path: str, load_8bit: bool, load_4bit: bool, device_map="auto", device="cuda",
                  use_flash_attn=False, **kwargs):
@@ -101,9 +88,9 @@ class LoraInferenceService(InferenceService):
         token_num, token_dim = self.model.lm_head.out_features, self.model.lm_head.in_features
         if self.model.lm_head.weight.shape[0] != token_num:
             self.model.lm_head.weight = torch.nn.Parameter(
-                torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+                torch.empty(token_num, token_dim, device=self.model.device, dtype=self.model.dtype))
             self.model.model.embed_tokens.weight = torch.nn.Parameter(
-                torch.empty(token_num, tokem_dim, device=model.device, dtype=model.dtype))
+                torch.empty(token_num, token_dim, device=self.model.device, dtype=self.model.dtype))
 
         print('Loading additional LLaVA weights...')
         if os.path.exists(os.path.join(lora_path, 'non_lora_trainables.bin')):
@@ -215,6 +202,95 @@ class LoraInferenceService(InferenceService):
         except Exception as e:
             raise e
 
+
+    def generate_response(self, user_id: str,  new_prompt: str, top_p: float, temperature: float, max_new_tokens: int, image: Optional[Image.Image] = None):
+
+        # Update specific conversation with new_prompt
+        existing_conversation = self.conversations.get(user_id, None)
+        conversation = self._update_conversation() if existing_conversation else self._start_new_conversation()
+        self.conversations[user_id] = conversation
+
+        # Generate response
+        full_prompt, response = self._generate_answer(top_p, temperature, max_new_tokens)
+
+        self._append_agent_response(user_id, response)
+
+        return full_prompt, response
+
+    def append_message(self, role: str, message: str, image: Optional[Image.Image] = None):
+        # TODO: if image, update conv_img to ensure there's only one image
+        if DEFAULT_IMAGE_TOKEN in message and image:
+            pass
+        elif DEFAULT_IMAGE_TOKEN in message and not image:
+            raise ValueError("Image required for message with image token.")
+        else:
+            self.conv.append_message(role, message)
+
+    '''
+    Given state of current conversation and image, generate the response to the user's prompt.
+    '''
+    def _generate_answer(self, top_p: float, temperature: float, max_new_tokens: int) -> (str, str):
+        full_prompt = self.conv.get_prompt()
+        image = self.conv_img
+        print(f'Full Prompt: {full_prompt}')
+
+        # Preprocess Image
+        processed_image_input, image_sizes = self._prepare_image_inputs(image_data=image)
+
+        # Process prompt
+        input_ids = tokenizer_image_token(full_prompt, self.tokenizer, IMAGE_TOKEN_INDEX,
+                                          return_tensors='pt').unsqueeze(0).cuda()
+
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                input_ids,
+                images=processed_image_input,
+                do_sample=True,
+                temperature=temperature,
+                num_beams=1,
+                top_p=top_p,
+                max_new_tokens=max_new_tokens,
+                use_cache=True
+            )
+
+        return full_prompt, self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+
+    def _start_new_conversation(self):
+        pass
+
+    def _append_user_prompt(self, user_id, new_prompt):
+        if self.conv is None:
+            raise RuntimeError("No existing conversation found. Start a new"
+                               "conversation using the `start_new_chat` method.")
+
+        self.conv.append_message(self.roles[0], new_prompt)
+        self.conv.append_message(self.roles[1], None)
+
+    def _append_agent_response(self, user_id, prompt_response):
+        if self.conv is None:
+            raise RuntimeError("No existing conversation found. Start a new"
+                               "conversation using the `start_new_chat` method.")
+
+        # TODO: in background task.
+        self.conversations[user_id][-1][-1] = prompt_response
+
+
+    def _prepare_image_inputs(self, image_data: Optional[Image.Image] = None):
+        if not image_data:
+            return None, None
+
+        images = [image_data]
+        image_sizes = [x.size for x in images]
+        images_tensor = process_images(
+            images,
+            self.image_processor,
+            self.model.config
+        ).to(self.model.device, dtype=torch.float16)
+
+        return images_tensor, image_sizes
+
+
+
 app = FastAPI()
 
 origins = [
@@ -234,15 +310,6 @@ app.add_middleware(
 
 # Base Model
 reference_model_path = "liuhaotian/llava-v1.5-7b"
-
-# Lora Checkpoints
-
-# Merged Checkpoints
-augmented_model_path = "./merged_checkpoints/llava-augmented-roastme-v1-MERGE"
-basic_model_path = "./merged_checkpoints/llava-basic-roastme-v1-MERGE"
-augmented_model_path_v2 = "./merged_checkpoints/llava-v1.5-7b-augmented-roastme-lora-13000-MERGE"
-augmented_model_path_4_epochs = "./merged_checkpoints/llava-v1.5-7b-augmented-roastme-lora-13000-4-epochs-MERGE/"
-
 lora_service = LoraInferenceService(reference_model_path, False, False)
 
 
