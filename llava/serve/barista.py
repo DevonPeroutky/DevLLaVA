@@ -3,7 +3,6 @@ from fastapi import FastAPI, File, UploadFile, BackgroundTasks
 from fastapi.responses import StreamingResponse
 
 from fastapi.middleware.cors import CORSMiddleware
-from llava.serve.baristia_utils import load_image_processor
 from llava.serve.lora_inference_service import LoraInferenceService
 from typing import Optional
 from PIL import Image
@@ -34,6 +33,7 @@ app.add_middleware(
 # Base Model
 reference_model_path = "liuhaotian/llava-v1.5-7b"
 lora_service = LoraInferenceService(reference_model_path, False, False)
+lora_service.load_lora_weights("/home/devonperoutky/LLaVA/checkpoints/llava-v1.5-7b-augmented-roastme-lora-13000-4-epochs")
 
 
 @app.get("/lora-checkpoints")
@@ -54,14 +54,13 @@ async def create_upload_file(user_id: str, file: UploadFile, prompt: str, temper
     # Convert the file content to a PIL image
     pil_image = Image.open(BytesIO(file_content))
 
+    # Moved to permanent one time.
     if lora:
-        # If Lora, load it and merge the weights
-        if lora:
-            print("Adding lora: ", lora)
-            lora_service.load_lora_weights(lora)
+        print("Adding lora: ", lora)
+        lora_service.load_lora_weights(lora)
 
         # Remove weights after we respond to the client
-        background_tasks.add_task(lora_service.unload_lora, lora)
+        # background_tasks.add_task(lora_service.unload_lora, lora)
 
     print(f'Selected Lora: {lora}')
     full_prompt, augmented_response = lora_service.generate_response(
@@ -83,8 +82,7 @@ async def create_upload_file(user_id: str, file: UploadFile, prompt: str, temper
 
 
 @app.post("/message/")
-async def message(prompt: str, system_prompt: str, temperature: float, top_p: float,
-                             max_new_tokens: int, background_tasks: BackgroundTasks, file: Optional[UploadFile] = None, lora: Optional[str] = None):
+async def message(prompt: str, temperature: float, top_p: float, max_new_tokens: int, background_tasks: BackgroundTasks, file: Optional[UploadFile] = None, lora: Optional[str] = None):
     file_content = await file.read()
 
     # Convert the file content to a PIL image
@@ -94,20 +92,15 @@ async def message(prompt: str, system_prompt: str, temperature: float, top_p: fl
     print(pil_image.size)
 
     print(prompt)
-    print(system_prompt)
 
     if lora:
-        # If Lora, load it and merge the weights
-        if lora:
-            print("Adding lora: ", lora)
-            lora_service.load_lora_weights(lora)
+        lora_service.load_lora_weights(lora)
 
         # Remove weights after we respond to the client
-        background_tasks.add_task(lora_service.unload_lora, lora)
+        # background_tasks.add_task(lora_service.unload_lora, lora)
 
     return StreamingResponse(lora_service.stream_predict(
         prompt,
-        system_prompt,
         top_p,
         temperature,
         max_new_tokens,

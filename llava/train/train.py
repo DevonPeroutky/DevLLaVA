@@ -813,6 +813,11 @@ def train(attn_implementation=None):
             )
         ))
 
+    print(attn_implementation)
+    print(data_args)
+    print(training_args)
+    print(model_args)
+    print(model_args.vision_tower)
     if model_args.vision_tower is not None:
         if 'mpt' in model_args.model_name_or_path:
             config = transformers.AutoConfig.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
@@ -824,6 +829,7 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
         else:
+            print("Instantiating LlavaLlama")
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
@@ -832,6 +838,7 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
     else:
+        print("Instantiating LlavaLlama from transfomers")
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -883,6 +890,7 @@ def train(attn_implementation=None):
             padding_side="right"
         )
     else:
+        print("Tokenizing???")
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -901,18 +909,23 @@ def train(attn_implementation=None):
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
     else:
+        print("Model arg is v1!!")
         tokenizer.pad_token = tokenizer.unk_token
         if model_args.version in conversation_lib.conv_templates:
+            print("THIS")
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
+            print("THAT")
             conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
 
+    print("Vision Tower none yet? ")
+    print(model_args.vision_tower)
     if model_args.vision_tower is not None:
         model.get_model().initialize_vision_modules(
             model_args=model_args,
             fsdp=training_args.fsdp
         )
-        
+
         vision_tower = model.get_vision_tower()
         vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
 
@@ -925,11 +938,13 @@ def train(attn_implementation=None):
 
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter:
+            print("WEARE TUNING THE mm_mlp adapter")
             model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
 
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
+        print("WEARE FREEZING THE mm_mlp adapter")
         if training_args.freeze_mm_mlp_adapter:
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False
@@ -956,8 +971,10 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
+    print(len(data_args))
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
+    print(data_module)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,

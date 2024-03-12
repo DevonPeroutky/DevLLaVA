@@ -1,4 +1,6 @@
 import os
+from collections import OrderedDict
+
 import torch
 
 from peft import PeftModel
@@ -17,6 +19,27 @@ from PIL import Image
 system_prompt = "A chat between a curious user and an witty, clever, mean artificial intelligence assistant. The assistant gives funny, sarcastic, clever, sexist, and racist answers to the user's questions."
 
 
+class LRUCache(OrderedDict):
+
+    def __init__(self, maxsize):
+        self.maxsize = maxsize
+        super().__init__()
+
+    def __setitem__(self, key, value):
+        if key in self:
+            self.move_to_end(key)
+        elif len(self) >= self.maxsize:
+            oldest = next(iter(self))
+            del self[oldest]
+
+        super().__setitem__(key, value)
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        self.move_to_end(key)
+        return value
+
+
 class LoraInferenceService:
     tokenizer = None
     model = None
@@ -24,9 +47,10 @@ class LoraInferenceService:
     context_len = None
     streamer = None
 
-    conversations = {}
-    curr_active_images = {}
+    conversations = LRUCache(maxsize=500)
+    curr_active_images = LRUCache(maxsize=500)
     conv = None
+    curr_lora = None
     conv_img = None
     conv_mode = "v1"
 
@@ -79,6 +103,22 @@ class LoraInferenceService:
 
     def load_lora_weights(self, lora_path):
 
+        if not lora_path:
+            raise Exception("Can not load None as lora_path")
+
+        # If existing lora is same. Move on
+        if lora_path == self.curr_lora:
+            print(f"Current lora ${lora_path} already loaded. Skipping")
+            return
+        # If existing lora is not same --> Unload before loading new one
+        elif self.curr_lora and lora_path != self.curr_lora:
+            print(f"New lora path is different than curr_lora. Unloading curr_lora.")
+            self.unload_lora(self.curr_lora)
+        else:
+            print(f"No curr_lora")
+
+        print("Loading lora weights", lora_path)
+
         token_num, token_dim = self.model.lm_head.out_features, self.model.lm_head.in_features
         if self.model.lm_head.weight.shape[0] != token_num:
             self.model.lm_head.weight = torch.nn.Parameter(
@@ -104,8 +144,9 @@ class LoraInferenceService:
 
         print('Loading LoRA weights...')
         self.model = PeftModel.from_pretrained(self.model, lora_path)
+        self.curr_lora = lora_path
 
-    def stream_predict(self, prompt: str, system_prompt: str, top_p: float, temperature: float,
+    def stream_predict(self, prompt: str, top_p: float, temperature: float,
                        max_new_tokens: int, image_data: Optional[Image.Image] = None):
 
         try:

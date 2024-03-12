@@ -33,3 +33,8 @@ ckpts*
 
 # Demo
 serve_images/
+
+# Keys
+*.crt
+*.key
+*.pem
