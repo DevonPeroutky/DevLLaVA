@@ -38,3 +38,8 @@ serve_images/
 *.crt
 *.key
 *.pem
+
+
+#Custom
+dataset/
+nohup.out
