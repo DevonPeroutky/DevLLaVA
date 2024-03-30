@@ -10,6 +10,7 @@ from io import BytesIO
 
 from llava.serve.service.mm_inference_service import MultiModalInferenceService
 from llava.serve.service.text_inference_service import TextInferenceService
+from llava.serve.service.vision_ai_service import ClaudeVisionAssistant
 
 device = "cuda"
 
@@ -39,9 +40,10 @@ reference_model_path = "liuhaotian/llava-v1.5-13b"
 # lora_service.load_lora_weights("/home/devonperoutky/LLaVA/checkpoints/llava-v1.5-7b-augmented-roastme-lora-13000-4-epochs")
 mm_service = MultiModalInferenceService(reference_model_path, False, False)
 mm_service.load_lora_weights("/home/devonperoutky/LLaVA/checkpoints/llava-v1.5-7b-augmented-roastme-lora-13000-4-epochs")
+claude_assistant = ClaudeVisionAssistant()
 
 # text_model_path = "lmsys/vicuna-7b-v1.5"
-# text_service = TextInferenceService(text_model_path, True, False)
+text_service = TextInferenceService(text_model_path, True, False)
 # text_service.load_lora_weights("/home/devonperoutky/checkpoints/lora/v1")
 
 
@@ -84,8 +86,8 @@ async def create_upload_file(user_id: str, file: UploadFile, prompt: str, temper
     background_tasks.add_task(mm_service.append_agent_response, user_id, augmented_response)
 
     return {
-        "augmented_response": augmented_response,
-        "basic_response": "",
+        "base_response": augmented_response,
+        "fine_tuned_response": augmented_response,
         "full_prompt": full_prompt
     }
 
@@ -140,3 +142,4 @@ async def message(user_id: str, prompt: str, temperature: float, top_p: float, m
         "basic_response": "",
         "full_prompt": full_prompt
     }
+
