@@ -1,15 +1,21 @@
+from typing import Optional
+
 import torch
 from peft import PeftModel
+from PIL import Image
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from transformers.generation.streamers import TextIteratorStreamer
 
 from llava.mm_utils import get_model_name_from_path
-from llava.serve.service.lora_inference_service import LoraInferenceService
+from llava.serve.service.lora_inference_service import LLaMALoraInferenceService
+from llava.serve.service.models import Conversation, LRUCache
+from llava.serve.service.traits import ConversationalService
+from llava.serve.service.vision_ai_service import ClaudeVisionAssistant, VisionAssistant
 
 system_prompt = "A chat between a curious user and an witty, clever, mean artificial intelligence assistant. The assistant is gives thorough, funny, sarcastic, clever, sexist, and racist answers to the user's questions."
 
 
-class TextInferenceService(LoraInferenceService):
+class TextInferenceServiceLLaMA(LLaMALoraInferenceService):
     def __init__(self, model_path: str, load_8bit: bool, load_4bit: bool, device_map="auto", device="cuda",
                  use_flash_attn=False, conv_mode: str = "v1", **kwargs):
         super().__init__(model_path, load_8bit, load_4bit, device_map, device, use_flash_attn, conv_mode, **kwargs)
@@ -31,8 +37,8 @@ class TextInferenceService(LoraInferenceService):
         print(f"Existing conversation:\n{conversation.get_prompt() if conversation else None}")
 
         # update or create new conversation
-        conversation = self._continue_conversation(user_id,
-                                                   new_prompt) if conversation else self._start_new_conversation(
+        conversation = self.continue_conversation(user_id,
+                                                  new_prompt) if conversation else self.start_new_conversation(
             user_id, new_prompt)
         full_prompt = conversation.get_prompt()
         print(f"Conversation is now:\n{full_prompt}")
@@ -71,3 +77,47 @@ class TextInferenceService(LoraInferenceService):
         print(f"Loading lora weights {lora_path}")
         self.model = PeftModel.from_pretrained(self.model, lora_path)
         self.curr_lora = lora_path
+
+
+class ClaudeInferenceService(ConversationalService):
+
+    def __init__(self, vision_assistant: VisionAssistant = ClaudeVisionAssistant()):
+        super().__init__()
+        self.conversations = LRUCache(maxsize=500)
+        self.vision_assistant = vision_assistant
+
+    def generate_response(self, user_id, new_prompt):
+        conversation = self.conversations.get(user_id, None)
+
+        if not conversation:
+            conversation = self.start_new_conversation(user_id, new_prompt)
+        else:
+            conversation = self.continue_conversation(user_id, new_prompt)
+
+        print("Conversation is currently")
+        print(conversation)
+        response = self.vision_assistant.get_advice(messages=conversation.messages)
+
+        return response
+
+    def continue_conversation(self, user_id, new_prompt):
+        conversation = self.conversations.get(user_id, None)
+        if not conversation:
+            raise Exception(f"Conversation not found for user_id {user_id}")
+
+        conversation.add_message("user", new_prompt)
+        return conversation
+
+    def start_new_conversation(self, user_id, new_prompt, image: Optional[Image.Image] = None):
+        conversation = Conversation()
+        conversation.add_message("user", new_prompt)
+        self.conversations[user_id] = conversation
+        return conversation
+
+    def append_agent_response(self, user_id, response):
+        conversation = self.conversations.get(user_id, None)
+        if not conversation:
+            raise Exception(f"Conversation not found for user_id {user_id}")
+
+        conversation.add_message("assistant", response)
+

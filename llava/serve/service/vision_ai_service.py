@@ -20,11 +20,11 @@ class VisionAssistant(ABC):
             super().__init__()
 
         @abstractmethod
-        def describe_person_in_image(self, image: Image):
+        def describe_person_in_image(self, image: Image, image_media_type, retries: int = 3, delay: int = 60):
             pass
 
         @abstractmethod
-        def roast_person(self, prompt: str, image: Image, text_only: bool = False):
+        def get_advice(self, messages: list, model: str):
             pass
 
 
@@ -84,23 +84,14 @@ class ClaudeVisionAssistant(VisionAssistant):
 
         return None
 
-    def get_advice(self, prompt: str) -> str:
+    def get_advice(self, messages, model: str = "claude-3-opus-20240229") -> str:
+        return "Fuck you"
         system_prompt = "You are a clever and mean therapist, as well as a hilarious comedian, who gives advice that is meant to be humorous. You don't care about the well-being of the person asking the questions. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous responses. Prioritize dry humor and coherence. If possible, give advice that is likely to blow up hilariously, but don't explain how that's going to happen or why"
 
         message = self._submit_inference(
-            model="claude-3-opus-20240229",
+            model=model,
             system_prompt=system_prompt,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ]
+            messages=messages
         )
 
         print(message.content[0].text)
