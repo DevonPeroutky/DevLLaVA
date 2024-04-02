@@ -85,13 +85,13 @@ class ClaudeVisionAssistant(VisionAssistant):
         return None
 
     def get_advice(self, messages, model: str = "claude-3-opus-20240229") -> str:
-        return "Fuck you"
+        # return "Fuck you"
         system_prompt = "You are a clever and mean therapist, as well as a hilarious comedian, who gives advice that is meant to be humorous. You don't care about the well-being of the person asking the questions. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous responses. Prioritize dry humor and coherence. If possible, give advice that is likely to blow up hilariously, but don't explain how that's going to happen or why"
 
         message = self._submit_inference(
             model=model,
             system_prompt=system_prompt,
-            messages=messages
+            messages=messages,
         )
 
         print(message.content[0].text)
