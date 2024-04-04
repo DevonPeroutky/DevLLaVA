@@ -15,7 +15,7 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 class VoiceToSpeechService:
     @staticmethod
-    async def text_chunker(chunks):
+    async def _text_chunker(chunks):
         """Split text into chunks, ensuring to not break sentences."""
         splitters = (".", ",", "?", "!", ";", ":", "—", "-", "(", ")", "[", "]", "}", " ")
         buffer = ""
@@ -34,7 +34,7 @@ class VoiceToSpeechService:
             yield buffer + " "
 
     @staticmethod
-    async def stream(audio_stream):
+    async def _stream(audio_stream):
         """Stream audio data using mpv player."""
         if not shutil.which("mpv") is not None:
             raise ValueError(
@@ -84,7 +84,6 @@ class VoiceToSpeechService:
         audio_data.seek(0)
         return audio_data
 
-
     @staticmethod
     async def text_to_speech_input_streaming(voice_id, text_iterator):
         """Send text to ElevenLabs API and stream the returned audio."""
@@ -111,11 +110,11 @@ class VoiceToSpeechService:
                         print("Connection closed")
                         break
 
-            listen_task = asyncio.create_task(VoiceToSpeechService.stream(listen()))
-
-            async for text in VoiceToSpeechService.text_chunker(text_iterator):
+            async for text in VoiceToSpeechService._text_chunker(text_iterator):
                 await websocket.send(json.dumps({"text": text, "try_trigger_generation": True}))
 
             await websocket.send(json.dumps({"text": ""}))
 
-            await listen_task
+            # Stream the audio data as it's received
+            async for audio_data in listen():
+                yield audio_data

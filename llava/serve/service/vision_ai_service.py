@@ -100,10 +100,18 @@ class ClaudeVisionAssistant(VisionAssistant):
         print(message.content[0].text)
         return message.content[0].text
 
-    async def get_advice_streaming(self, messages, model: str = "claude-3-haiku-2024-03-07") -> Iterator[str]:
+    def get_advice_streaming(self, messages, model: str = "claude-3-haiku-20240307"):
+        # with self.client.messages.stream(
+        #     max_tokens=1024,
+        #     system_prompt=self.system_prompt,
+        #     messages=messages,
+        #     model=model,
+        # ) as stream:
+        #     for text in stream.text_stream:
+        #         yield text
         with self.client.messages.stream(
             max_tokens=1024,
-            system_prompt=self.system_prompt,
+            system=self.system_prompt,
             messages=messages,
             model=model,
         ) as stream:
