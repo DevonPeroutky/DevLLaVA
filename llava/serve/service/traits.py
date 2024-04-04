@@ -27,3 +27,5 @@ class ConversationalService(ABC):
     @abstractmethod
     def append_agent_response(self, user_id, response):
         pass
+
+

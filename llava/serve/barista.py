@@ -1,7 +1,11 @@
 import os
-from fastapi import FastAPI, UploadFile, BackgroundTasks
-from fastapi.responses import StreamingResponse
+import re
+from http.client import HTTPException
 
+import whisper
+
+from fastapi import FastAPI, UploadFile, BackgroundTasks, File
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from llava.serve.service.lora_inference_service import LLaMALoraInferenceService
 from typing import Optional
@@ -11,6 +15,7 @@ from io import BytesIO
 from llava.serve.service.mm_inference_service import MultiModalInferenceServiceLLaMA
 from llava.serve.service.text_inference_service import TextInferenceServiceLLaMA, ClaudeInferenceService
 from llava.serve.service.vision_ai_service import ClaudeVisionAssistant
+from llava.serve.service.voice_service import VoiceToSpeechService
 
 device = "cuda"
 
@@ -46,6 +51,9 @@ claude_assistant = ClaudeVisionAssistant()
 # text_service = TextInferenceService(text_model_path, True, False)
 # text_service.load_lora_weights("/home/devonperoutky/checkpoints/lora/v1")
 text_service = ClaudeInferenceService()
+
+# Load the English-only Whisper model
+whisper_model = whisper.load_model("base.en")# .to('cuda:0')
 
 
 @app.get("/lora-checkpoints")
@@ -93,28 +101,6 @@ async def create_upload_file(user_id: str, file: UploadFile, prompt: str, temper
     }
 
 
-@app.post("/stream_message/")
-async def stream_message(prompt: str, temperature: float, top_p: float, max_new_tokens: int, background_tasks: BackgroundTasks, file: Optional[UploadFile] = None, lora: Optional[str] = None):
-    file_content = await file.read()
-
-    # Convert the file content to a PIL image
-    pil_image = Image.open(BytesIO(file_content))
-
-    if lora:
-        mm_service.load_lora_weights(lora)
-
-        # Remove weights after we respond to the client
-        # background_tasks.add_task(lora_service.unload_lora, lora)
-
-    return StreamingResponse(mm_service.stream_predict(
-        prompt,
-        top_p,
-        temperature,
-        max_new_tokens,
-        pil_image,
-    ), media_type="text/plain")
-
-
 @app.post("/message/")
 async def message(user_id: str, prompt: str, temperature: float, top_p: float, max_new_tokens: int, background_tasks: BackgroundTasks, lora: Optional[str] = None):
 
@@ -129,3 +115,57 @@ async def message(user_id: str, prompt: str, temperature: float, top_p: float, m
         "response": augmented_response,
     }
 
+
+@app.post("/transcribe/")
+async def transcribe_audio(audio_file: UploadFile, background_tasks: BackgroundTasks):
+
+    # Save temporary audio file
+    temp_file_path = f"temp_{audio_file.filename}"
+    with open(temp_file_path, 'wb') as f:
+        f.write(audio_file.file.read())
+
+    # Transcribe audio
+    result = whisper_model.transcribe(temp_file_path)
+    text = result["text"]
+
+    # Clean up temporary file
+    background_tasks.add_task(os.remove, temp_file_path)
+
+    return {"transcription": text}
+
+
+@app.post("/audio-input-audio-response/")
+async def audio_input_audio_response(user_id: str, audio_file: UploadFile, background_tasks: BackgroundTasks):
+    # Save temporary audio file
+    temp_file_path = f"temp_{audio_file.filename}"
+    with open(temp_file_path, 'wb') as f:
+        f.write(audio_file.file.read())
+
+    # Transcribe audio
+    result = whisper_model.transcribe(temp_file_path)
+    text = result["text"]
+    print("Input: ", text)
+
+    # Get response
+    response = text_service.generate_response(
+        user_id=user_id,
+        new_prompt=text,
+        streaming=False
+    )
+    print("Response: ", response)
+    response = re.sub(r'\*.*?\*', '', response)
+    print("Stripeed Response: ", response)
+
+    # Generate streaming response from LLM
+    # await text_to_speech_input_streaming(VOICE_ID, text_service.generate_response(
+    #     user_id=user_id,
+    #     prompt = text
+    # ))
+    VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+
+    try:
+        audio_data = VoiceToSpeechService.text_to_speech(VOICE_ID, response)
+        background_tasks.add_task(text_service.append_agent_response, user_id, response)
+        return StreamingResponse(audio_data, media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

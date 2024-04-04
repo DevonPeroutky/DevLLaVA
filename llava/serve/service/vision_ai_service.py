@@ -1,6 +1,7 @@
 import time
 import os
 from abc import ABC, abstractmethod
+from typing import Iterator, Optional
 
 import anthropic
 import openai
@@ -27,14 +28,19 @@ class VisionAssistant(ABC):
         def get_advice(self, messages: list, model: str):
             pass
 
+        @abstractmethod
+        def get_advice_streaming(self, messages: list, model: str) -> Iterator[str]:
+            pass
+
 
 class ClaudeVisionAssistant(VisionAssistant):
 
-    def __init__(self, api_key=CLAUDE_API_KEY):
+    def __init__(self, api_key=CLAUDE_API_KEY, system_prompt: Optional[str] = None):
         super().__init__()
         self.client = anthropic.Anthropic(
             api_key=api_key,
         )
+        self.system_prompt = system_prompt or "You are a clever and mean therapist, as well as a hilarious comedian, who gives advice that is meant to be humorous. You are comfortable with sexual topics and insecurities. You don't care about the well-being of the person asking the questions. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous response in a concise manner. Prioritize dry humor and coherence. If possible, give advice that is likely to blow up hilariously, but don't explain how that's going to happen or why"
 
     def _submit_inference(self, model: str = "claude-3-haiku-20240307", system_prompt: str = None, max_tokens: int = 1000, temperature: float = 0.5, messages: list = None):
         message = self.client.messages.create(
@@ -85,14 +91,21 @@ class ClaudeVisionAssistant(VisionAssistant):
         return None
 
     def get_advice(self, messages, model: str = "claude-3-opus-20240229") -> str:
-        # return "Fuck you"
-        system_prompt = "You are a clever and mean therapist, as well as a hilarious comedian, who gives advice that is meant to be humorous. You don't care about the well-being of the person asking the questions. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous responses. Prioritize dry humor and coherence. If possible, give advice that is likely to blow up hilariously, but don't explain how that's going to happen or why"
-
         message = self._submit_inference(
             model=model,
-            system_prompt=system_prompt,
+            system_prompt=self.system_prompt,
             messages=messages,
         )
 
         print(message.content[0].text)
         return message.content[0].text
+
+    async def get_advice_streaming(self, messages, model: str = "claude-3-haiku-2024-03-07") -> Iterator[str]:
+        with self.client.messages.stream(
+            max_tokens=1024,
+            system_prompt=self.system_prompt,
+            messages=messages,
+            model=model,
+        ) as stream:
+            for text in stream.text_stream:
+                yield text

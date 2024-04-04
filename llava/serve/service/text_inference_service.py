@@ -86,7 +86,7 @@ class ClaudeInferenceService(ConversationalService):
         self.conversations = LRUCache(maxsize=500)
         self.vision_assistant = vision_assistant
 
-    def generate_response(self, user_id, new_prompt):
+    def generate_response(self, user_id: str, new_prompt: str, streaming: bool = False):
         conversation = self.conversations.get(user_id, None)
 
         if not conversation:
@@ -96,9 +96,11 @@ class ClaudeInferenceService(ConversationalService):
 
         print("Conversation is currently")
         print(conversation)
-        response = self.vision_assistant.get_advice(messages=conversation.messages)
 
-        return response
+        if streaming:
+            return self.vision_assistant.get_advice_streaming(messages=conversation.messages)
+        else:
+            return self.vision_assistant.get_advice(messages=conversation.messages)
 
     def continue_conversation(self, user_id, new_prompt):
         conversation = self.conversations.get(user_id, None)
