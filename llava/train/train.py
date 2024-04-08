@@ -971,10 +971,8 @@ def train(attn_implementation=None):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
-    print(len(data_args))
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args)
-    print(data_module)
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,
