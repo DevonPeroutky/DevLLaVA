@@ -8,7 +8,7 @@ from fastapi import FastAPI, UploadFile, BackgroundTasks, File
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from llava.serve.service.lora_inference_service import LLaMALoraInferenceService
-from typing import Optional
+from typing import Optional, AsyncGenerator
 from PIL import Image
 from io import BytesIO
 
@@ -186,38 +186,29 @@ async def audio_input_stream_audio_response(user_id: str, audio_file: UploadFile
     with open(temp_file_path, 'wb') as f:
         f.write(audio_file.file.read())
 
+        # Clean up temporary file
+        background_tasks.add_task(os.remove, temp_file_path)
+
     # Transcribe audio
     result = whisper_model.transcribe(temp_file_path)
     text = result["text"]
     print("Input: ", text)
 
-    response = text_service.generate_response(
-        user_id=user_id,
-        new_prompt=text,
-        streaming=True
-    )
+    try:
+        text_response: AsyncGenerator[str, None] = text_service.generate_response(
+            user_id=user_id,
+            new_prompt=text,
+            streaming=True
+        )
 
-    VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
-    return StreamingResponse(voice_service.text_to_speech_input_streaming(VOICE_ID, response), media_type="audio/mpeg")
+        VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
+        streaming_response = voice_service.text_to_speech_input_streaming(VOICE_ID, text_response)
 
-    # return StreamingResponse(response, media_type="text/plain")
+        # Append agent response to the user's chat history
+        background_tasks.add_task(text_service.append_agent_response, user_id, "TEMP")
 
-    # Generate streaming response from LLM
-    # VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
-    # await text_to_speech_input_streaming(VOICE_ID, text_service.generate_response(
-    #     user_id=user_id,
-    #     prompt = text
-    # ))
-
-    # try:
-    #     audio_data = VoiceToSpeechService.text_to_speech(VOICE_ID, response)
-    #
-    #     # Append agent response to the user's chat history
-    #     background_tasks.add_task(text_service.append_agent_response, user_id, response)
-    #
-    #     # Clean up temporary file
-    #     background_tasks.add_task(os.remove, temp_file_path)
-    #
-    #     return StreamingResponse(audio_data, media_type="audio/mpeg")
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=str(e))
+        return StreamingResponse(streaming_response, media_type="audio/mpeg")
+    except Exception as e:
+        print(e)
+        print(e.with_traceback())
+        raise HTTPException()

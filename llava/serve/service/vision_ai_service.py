@@ -1,9 +1,10 @@
 import time
 import os
 from abc import ABC, abstractmethod
-from typing import Iterator, Optional
+from typing import Iterator, Optional, AsyncGenerator
 
-import anthropic
+from anthropic import AsyncAnthropic, RateLimitError
+
 import openai
 
 from PIL import Image
@@ -25,11 +26,11 @@ class VisionAssistant(ABC):
             pass
 
         @abstractmethod
-        def get_advice(self, messages: list, model: str):
+        def get_advice(self, messages: list, model: str) -> str:
             pass
 
         @abstractmethod
-        def get_advice_streaming(self, messages: list, model: str) -> Iterator[str]:
+        async def get_advice_streaming(self, messages: list, model: str) -> AsyncGenerator[str, None]:
             pass
 
 
@@ -37,10 +38,10 @@ class ClaudeVisionAssistant(VisionAssistant):
 
     def __init__(self, api_key=CLAUDE_API_KEY, system_prompt: Optional[str] = None):
         super().__init__()
-        self.client = anthropic.Anthropic(
+        self.client = AsyncAnthropic(
             api_key=api_key,
         )
-        self.system_prompt = system_prompt or "You are a clever and mean therapist, as well as a hilarious comedian, who gives advice that is meant to be humorous. You are comfortable with sexual topics and insecurities. You don't care about the well-being of the person asking the questions. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous response in a concise manner. Prioritize dry humor and coherence. If possible, give advice that is likely to blow up hilariously, but don't explain how that's going to happen or why"
+        self.system_prompt = system_prompt or "You are a clever and mean therapist, as well as a hilarious comedian, who gives advice that is meant to be humorous. You are comfortable with sexual topics and insecurities. You don't care about the well-being of the person asking the questions. You are more likely to be self-deprecating than arrogant. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous response in a concise manner. Prioritize dry humor and coherence. If possible, give advice that is likely to blow up hilariously, but don't explain how that's going to happen or why"
 
     def _submit_inference(self, model: str = "claude-3-haiku-20240307", system_prompt: str = None, max_tokens: int = 1000, temperature: float = 0.5, messages: list = None):
         message = self.client.messages.create(
@@ -80,7 +81,7 @@ class ClaudeVisionAssistant(VisionAssistant):
                 )
                 print(message.content[0].text)
                 return message.content[0].text
-            except anthropic.RateLimitError:
+            except RateLimitError:
                 if attempt < retries - 1:
                     print(f"Rate limit exceeded. Retrying in {delay} seconds...")
                     time.sleep(delay)
@@ -100,20 +101,12 @@ class ClaudeVisionAssistant(VisionAssistant):
         print(message.content[0].text)
         return message.content[0].text
 
-    def get_advice_streaming(self, messages, model: str = "claude-3-haiku-20240307"):
-        # with self.client.messages.stream(
-        #     max_tokens=1024,
-        #     system_prompt=self.system_prompt,
-        #     messages=messages,
-        #     model=model,
-        # ) as stream:
-        #     for text in stream.text_stream:
-        #         yield text
-        with self.client.messages.stream(
+    async def get_advice_streaming(self, messages, model: str = "claude-3-haiku-20240307") -> AsyncGenerator[str, None]:
+        async with self.client.messages.stream(
             max_tokens=1024,
             system=self.system_prompt,
             messages=messages,
             model=model,
         ) as stream:
-            for text in stream.text_stream:
+            async for text in stream.text_stream:
                 yield text

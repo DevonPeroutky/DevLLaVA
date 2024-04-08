@@ -106,11 +106,13 @@ class VoiceToSpeechService:
                             yield base64.b64decode(data["audio"])
                         elif data.get('isFinal'):
                             break
-                    except websockets.exceptions.ConnectionClosed:
+                    except websockets.exceptions.ConnectionClosed as e:
                         print("Connection closed")
+                        print(e)
                         break
 
             async for text in VoiceToSpeechService._text_chunker(text_iterator):
+                print(text)
                 await websocket.send(json.dumps({"text": text, "try_trigger_generation": True}))
 
             await websocket.send(json.dumps({"text": ""}))
