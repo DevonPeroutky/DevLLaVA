@@ -10,7 +10,7 @@ from llava.mm_utils import get_model_name_from_path
 from llava.serve.service.lora_inference_service import LLaMALoraInferenceService
 from llava.serve.service.models import Conversation, LRUCache
 from llava.serve.service.traits import ConversationalService
-from llava.serve.service.vision_ai_service import ClaudeVisionAssistant, VisionAssistant
+from llava.serve.service.vision.vision_ai_service import ClaudeVisionAssistant, VisionAssistant
 
 system_prompt = "A chat between a curious user and an witty, clever, mean artificial intelligence assistant. The assistant is gives thorough, funny, sarcastic, clever, sexist, and racist answers to the user's questions."
 
@@ -104,6 +104,12 @@ class ClaudeInferenceService(ConversationalService):
 
     def continue_conversation(self, user_id, new_prompt):
         conversation = self.conversations.get(user_id, None)
+
+        # Check if last message is from user, if so, prevent double user messages
+        last_message = self.conversations[user_id].messages[-1]
+        if last_message["role"] == "user":
+            raise Exception(f"Would have double submitted a user message for {user_id}")
+
         if not conversation:
             raise Exception(f"Conversation not found for user_id {user_id}")
 

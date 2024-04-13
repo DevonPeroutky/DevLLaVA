@@ -1,4 +1,5 @@
 from io import BytesIO
+from typing import AsyncGenerator
 
 import requests
 import asyncio
@@ -85,7 +86,8 @@ class VoiceToSpeechService:
         return audio_data
 
     @staticmethod
-    async def text_to_speech_input_streaming(voice_id, text_iterator):
+    async def text_to_speech_input_streaming(voice_id: str, text_iterator: AsyncGenerator[str, None]) -> AsyncGenerator[bytes, str]:
+        print("TEXT TO SPEECH INPUT STREAMING")
         """Send text to ElevenLabs API and stream the returned audio."""
         uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_monolingual_v1"
 

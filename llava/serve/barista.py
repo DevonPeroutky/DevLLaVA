@@ -4,18 +4,19 @@ from http.client import HTTPException
 
 import whisper
 
-from fastapi import FastAPI, UploadFile, BackgroundTasks, File
+from fastapi import FastAPI, UploadFile, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from llava.serve.service.lora_inference_service import LLaMALoraInferenceService
-from typing import Optional, AsyncGenerator
+from typing import Optional, AsyncGenerator, Any
 from PIL import Image
 from io import BytesIO
+import asyncio
+
 
 from llava.serve.service.mm_inference_service import MultiModalInferenceServiceLLaMA
-from llava.serve.service.text_inference_service import TextInferenceServiceLLaMA, ClaudeInferenceService
-from llava.serve.service.vision_ai_service import ClaudeVisionAssistant
-from llava.serve.service.voice_service import VoiceToSpeechService
+from llava.serve.service.text.text_inference_service import ClaudeInferenceService
+from llava.serve.service.voice.constants import DR_PHIL_VOICE_ID
+from llava.serve.service.voice.voice_service import VoiceToSpeechService
 
 device = "cuda"
 
@@ -64,8 +65,12 @@ async def fetch_lora_checkpoints():
     blocklist = ["llava-v1.5-7b-augmented-roastme-lora-full-8-epochs"]
     checkpoint_directory = "/home/devonperoutky/LLaVA/checkpoints/"
     prefix = "llava-v1.5-7b-augmented-roastme-lora-"
-    paths = os.listdir(checkpoint_directory)
-    return [{ "path": checkpoint_directory + path, "displayName": path.removeprefix(prefix)} for path in paths if prefix in path and path not in blocklist]
+    try:
+        paths = os.listdir(checkpoint_directory)
+        return [{ "path": checkpoint_directory + path, "displayName": path.removeprefix(prefix)} for path in paths if prefix in path and path not in blocklist]
+    except Exception as e:
+        print("Error fetching loras: ", e)
+        return []
 
 
 @app.post("/uploadfile/")
@@ -159,11 +164,6 @@ async def audio_input_audio_response(user_id: str, audio_file: UploadFile, backg
     response = re.sub(r'\*.*?\*', '', response)
     print("Stripeed Response: ", response)
 
-    # Generate streaming response from LLM
-    # await text_to_speech_input_streaming(VOICE_ID, text_service.generate_response(
-    #     user_id=user_id,
-    #     prompt = text
-    # ))
     VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
 
     try:
@@ -179,6 +179,32 @@ async def audio_input_audio_response(user_id: str, audio_file: UploadFile, backg
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def distributor(gen, consumers):
+    async for item in gen:
+        for queue in consumers:
+            await queue.put(item)
+    for queue in consumers:
+        await queue.put(None)  # Signal the consumers to stop
+
+
+# Consumer 1: Accumulates values into a string
+async def accumulator(queue):
+    accumulated = ""
+    while True:
+        item = await queue.get()
+        if item is None: break  # End of stream
+        accumulated += item
+    return accumulated
+
+
+# Consumer 2: This would be used with a FastAPI StreamingResponse
+async def streamer(queue) -> AsyncGenerator[str, None]:
+    while True:
+        item = await queue.get()
+        if item is None: break  # End of stream
+        yield item
+
+
 @app.post("/audio-input-stream-audio-response/")
 async def audio_input_stream_audio_response(user_id: str, audio_file: UploadFile, background_tasks: BackgroundTasks):
     # Save temporary audio file
@@ -191,24 +217,42 @@ async def audio_input_stream_audio_response(user_id: str, audio_file: UploadFile
 
     # Transcribe audio
     result = whisper_model.transcribe(temp_file_path)
-    text = result["text"]
+    text = result["text"].strip()
     print("Input: ", text)
 
+    # if text is empty, return empty audio
+    if not text:
+        print("Empty text")
+        return StreamingResponse(b"", media_type="audio/mpeg")
+
     try:
+        # Generate streaming response from LLM
         text_response: AsyncGenerator[str, None] = text_service.generate_response(
             user_id=user_id,
             new_prompt=text,
             streaming=True
         )
 
-        VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
-        streaming_response = voice_service.text_to_speech_input_streaming(VOICE_ID, text_response)
+        # Setup Queues
+        queue_for_conversation, queue_for_voice_stream = asyncio.Queue(), asyncio.Queue()
+        queues = [queue_for_voice_stream, queue_for_conversation]
+
+        # Add producer -> queues  to the event loop
+        asyncio.create_task(distributor(text_response, queues))
+
+        # Accumulate coroutine response from LLM. Doesn't block the event loop
+        accumulated_result = await asyncio.create_task(accumulator(queue_for_conversation))
+
+        # Get coroutine response from LLM as async generator
+        text_input_stream = streamer(queue_for_voice_stream)
+
+        # Stream the streaming response from the LLM to Text2Voice service and return the audio stream
+        streaming_response: AsyncGenerator[bytes, Any] = voice_service.text_to_speech_input_streaming(DR_PHIL_VOICE_ID, text_input_stream)
 
         # Append agent response to the user's chat history
-        background_tasks.add_task(text_service.append_agent_response, user_id, "TEMP")
+        background_tasks.add_task(text_service.append_agent_response, user_id, accumulated_result)
 
         return StreamingResponse(streaming_response, media_type="audio/mpeg")
     except Exception as e:
         print(e)
-        print(e.with_traceback())
         raise HTTPException()
