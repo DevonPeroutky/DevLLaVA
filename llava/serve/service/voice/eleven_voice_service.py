@@ -35,30 +35,6 @@ class VoiceToSpeechService:
             yield buffer + " "
 
     @staticmethod
-    async def _stream(audio_stream):
-        """Stream audio data using mpv player."""
-        if not shutil.which("mpv") is not None:
-            raise ValueError(
-                "mpv not found, necessary to stream audio. "
-                "Install instructions: https://mpv.io/installation/"
-            )
-
-        mpv_process = subprocess.Popen(
-            ["mpv", "--no-cache", "--no-terminal", "--", "fd://0"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-
-        print("Started streaming audio")
-        async for chunk in audio_stream:
-            if chunk:
-                mpv_process.stdin.write(chunk)
-                mpv_process.stdin.flush()
-
-        if mpv_process.stdin:
-            mpv_process.stdin.close()
-        mpv_process.wait()
-
-    @staticmethod
     def text_to_speech(voice_id, prompt):
         CHUNK_SIZE = 1024
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -89,7 +65,7 @@ class VoiceToSpeechService:
     async def text_to_speech_input_streaming(voice_id: str, text_iterator: AsyncGenerator[str, None]) -> AsyncGenerator[bytes, str]:
         print("TEXT TO SPEECH INPUT STREAMING")
         """Send text to ElevenLabs API and stream the returned audio."""
-        uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_monolingual_v1"
+        uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_turbo_v2&optimize_streaming_latency=3"
 
         async with websockets.connect(uri) as websocket:
             await websocket.send(json.dumps({

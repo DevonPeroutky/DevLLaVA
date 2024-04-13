@@ -16,7 +16,8 @@ import asyncio
 from llava.serve.service.mm_inference_service import MultiModalInferenceServiceLLaMA
 from llava.serve.service.text.text_inference_service import ClaudeInferenceService
 from llava.serve.service.voice.constants import DR_PHIL_VOICE_ID
-from llava.serve.service.voice.voice_service import VoiceToSpeechService
+from llava.serve.service.voice.deepgram_voice_service import DeepgramVoiceToSpeechService
+from llava.serve.service.voice.eleven_voice_service import VoiceToSpeechService
 
 device = "cuda"
 
@@ -57,7 +58,8 @@ text_service = ClaudeInferenceService()
 whisper_model = whisper.load_model("base.en")# .to('cuda:0')
 
 # Voice Service
-voice_service = VoiceToSpeechService()
+eleven_labs_voice_service = VoiceToSpeechService()
+deepgram_voice_service = DeepgramVoiceToSpeechService()
 
 
 @app.get("/lora-checkpoints")
@@ -247,7 +249,8 @@ async def audio_input_stream_audio_response(user_id: str, audio_file: UploadFile
         text_input_stream = streamer(queue_for_voice_stream)
 
         # Stream the streaming response from the LLM to Text2Voice service and return the audio stream
-        streaming_response: AsyncGenerator[bytes, Any] = voice_service.text_to_speech_input_streaming(DR_PHIL_VOICE_ID, text_input_stream)
+        streaming_response: AsyncGenerator[bytes, Any] = eleven_labs_voice_service.text_to_speech_input_streaming(DR_PHIL_VOICE_ID, text_input_stream)
+        # streaming_response: AsyncGenerator[bytes, Any] = deepgram_voice_service.text_to_speech("None", accumulated_result)
 
         # Append agent response to the user's chat history
         background_tasks.add_task(text_service.append_agent_response, user_id, accumulated_result)
