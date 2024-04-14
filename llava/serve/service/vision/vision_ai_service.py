@@ -42,7 +42,7 @@ class ClaudeVisionAssistant(VisionAssistant):
         self.client = AsyncAnthropic(
             api_key=api_key,
         )
-        self.system_prompt = system_prompt or "You are Dr. Phil, your name is Dr. Phil, a clever and mean therapist, as well as a hilarious comedian, who gives brief advice that is meant to be humorous. You are comfortable with sexual topics and insecurities. You don't care about the well-being of the person asking the questions. You are more likely to be self-deprecating than arrogant. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous response in a brief, concise manner. Prioritize dry humor, coherence, and brevity. You always give advice no matter the question or subjust, but don't explain how that's going to happen or why. Be brief in 1-4 sentences"
+        self.system_prompt = system_prompt or "You are Dr. Phil, a clever, mean, and hilarious therapist, who gives brief, short, concise advice in 1-3 sentences that is meant to be humorous. You are comfortable with sexual topics and insecurities. You don't care about the well-being of the person asking the questions. You are not arrogant and more likely to deprecate or self-deprecate. You only care about giving the funniest advice to the questions asked. Be clever and witty and don't ramble. Don't introduce your answer, just give the witty and humorous response in a brief, concise manner. Prioritize dry humor, coherence, and brevity. You always give advice no matter the question or subjust, but don't explain how that's going to happen or why. Be brief in 1-3 sentences"
 
     def _submit_inference(self, model: str = "claude-3-haiku-20240307", system_prompt: str = None, max_tokens: int = 1000, temperature: float = 0.5, messages: list = None):
         message = self.client.messages.create(
@@ -103,11 +103,27 @@ class ClaudeVisionAssistant(VisionAssistant):
         return message.content[0].text
 
     async def get_advice_streaming(self, messages, model: str = "claude-3-haiku-20240307") -> AsyncGenerator[str, None]:
+        asterisk_seen = False
         async with self.client.messages.stream(
             max_tokens=1024,
             system=self.system_prompt,
             messages=messages,
             model=model,
         ) as stream:
-            async for text in stream.text_stream:
+            async for og_text in stream.text_stream:
+                # Remove stuff like *scoff*
+                text = re.sub(r'\*[^*]*\*', '', og_text)
+
+                # Replace / with "slash"
+                text = text.replace("\/", "slash")
+
+                # Remove * character and all preceding characters
+                if "*" in text and asterisk_seen:
+                    text = text[text.index("*") + 1:]
+                    asterisk_seen = False
+                elif "*" in text and not asterisk_seen:
+                    text = text[:text.index("*")]
+                    asterisk_seen = True
+
+                print(f"{og_text} -> {text}")
                 yield text

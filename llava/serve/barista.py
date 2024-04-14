@@ -144,6 +144,12 @@ async def transcribe_audio(audio_file: UploadFile, background_tasks: BackgroundT
     return {"transcription": text}
 
 
+@app.get("/conversation-history/")
+async def conversation_history(user_id: str):
+    convo = text_service.get_conversation(user_id)
+    return convo.messages if convo else []
+
+
 @app.post("/audio-input-audio-response/")
 async def audio_input_audio_response(user_id: str, audio_file: UploadFile, background_tasks: BackgroundTasks):
     # Save temporary audio file

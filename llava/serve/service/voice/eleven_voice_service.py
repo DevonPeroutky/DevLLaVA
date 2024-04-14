@@ -15,6 +15,19 @@ ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 
 class VoiceToSpeechService:
+    websocket = None  # Class level attribute to hold the WebSocket connection
+
+    @classmethod
+    async def ensure_websocket_connected(cls, uri):
+        """Ensure that the WebSocket connection is established."""
+        if not cls.websocket or cls.websocket.closed:
+            cls.websocket = await websockets.connect(uri)
+            await cls.websocket.send(json.dumps({
+                "text": " ",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
+                "xi_api_key": ELEVENLABS_API_KEY,
+            }))
+
     @staticmethod
     async def _text_chunker(chunks):
         """Split text into chunks, ensuring to not break sentences."""
@@ -67,34 +80,29 @@ class VoiceToSpeechService:
         """Send text to ElevenLabs API and stream the returned audio."""
         uri = f"wss://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream-input?model_id=eleven_turbo_v2&optimize_streaming_latency=3"
 
-        async with websockets.connect(uri) as websocket:
-            await websocket.send(json.dumps({
-                "text": " ",
-                "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
-                "xi_api_key": ELEVENLABS_API_KEY,
-            }))
+        await VoiceToSpeechService.ensure_websocket_connected(uri)
 
-            async def listen():
-                """Listen to the websocket for audio data and stream it."""
-                while True:
-                    try:
-                        message = await websocket.recv()
-                        data = json.loads(message)
-                        if data.get("audio"):
-                            yield base64.b64decode(data["audio"])
-                        elif data.get('isFinal'):
-                            break
-                    except websockets.exceptions.ConnectionClosed as e:
-                        print("Connection closed")
-                        print(e)
+        async def listen():
+            """Listen to the websocket for audio data and stream it."""
+            while True:
+                try:
+                    message = await VoiceToSpeechService.websocket.recv()
+                    data = json.loads(message)
+                    if data.get("audio"):
+                        yield base64.b64decode(data["audio"])
+                    elif data.get('isFinal'):
                         break
+                except websockets.exceptions.ConnectionClosed as e:
+                    print("Connection closed")
+                    print(e)
+                    break
 
-            async for text in VoiceToSpeechService._text_chunker(text_iterator):
-                print(text)
-                await websocket.send(json.dumps({"text": text, "try_trigger_generation": True}))
+        async for text in VoiceToSpeechService._text_chunker(text_iterator):
+            print(text)
+            await VoiceToSpeechService.websocket.send(json.dumps({"text": text, "try_trigger_generation": True}))
 
-            await websocket.send(json.dumps({"text": ""}))
+        await VoiceToSpeechService.websocket.send(json.dumps({"text": ""}))
 
-            # Stream the audio data as it's received
-            async for audio_data in listen():
-                yield audio_data
+        # Stream the audio data as it's received
+        async for audio_data in listen():
+            yield audio_data

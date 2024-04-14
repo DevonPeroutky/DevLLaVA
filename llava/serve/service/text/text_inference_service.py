@@ -86,6 +86,9 @@ class ClaudeInferenceService(ConversationalService):
         self.conversations = LRUCache(maxsize=500)
         self.vision_assistant = vision_assistant
 
+    def get_conversation(self, user_id: str) -> Optional[Conversation]:
+        return self.conversations.get(user_id, None)
+
     def generate_response(self, user_id: str, new_prompt: str, streaming: bool = False):
         conversation = self.conversations.get(user_id, None)
 
